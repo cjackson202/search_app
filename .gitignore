@@ -1,2 +1,4 @@
 .venv
 .env
+app/__pycache__/styling.cpython-311.pyc
+app/extracted_text.txt

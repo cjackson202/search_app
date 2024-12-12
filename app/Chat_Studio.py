@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 from openai import AzureOpenAI  
 import tiktoken  
 import re  
+from styling import global_page_style2
   
 # Load environment variables  
 load_dotenv()  
@@ -59,25 +60,36 @@ def connect_to_blob_storage():
     return container_client  
   
 def load_blob_content(blob_client):  
-    """Loads and returns the content of the PDF blob."""  
+    """Loads and returns the content of the PDF or TXT blob."""  
     blob_name = blob_client.blob_name  
-    if not blob_name.lower().endswith('.pdf'):  
-        raise ValueError(f"Blob {blob_name} is not a PDF file.")  
+    if not (blob_name.lower().endswith('.pdf') or blob_name.lower().endswith('.txt')):  
+        raise ValueError(f"Blob {blob_name} is not a PDF or TXT file.")  
   
     blob_data = blob_client.download_blob().readall()  
-    pdf_stream = io.BytesIO(blob_data)  
-    document_text = ""  
+      
+    if blob_name.lower().endswith('.pdf'):  
+        pdf_stream = io.BytesIO(blob_data)  
+        pages = ""  
   
-    with pdfplumber.open(pdf_stream) as pdf:  
-        for page in pdf.pages:  
-            document_text += page.extract_text() + "\n"  
-    return document_text  
+        with pdfplumber.open(pdf_stream) as pdf:  
+            for page_num, page in enumerate(pdf.pages, start=1):  
+                text = page.extract_text()  
+                if text:  
+                    text += f"\n\nPg. {page_num}\n\n--page break--\n\n"
+                    pages += text
+        # st.write(pages)
+        # time.sleep(500)
+        return pages  
+      
+    elif blob_name.lower().endswith('.txt'):  
+        text = blob_data.decode('utf-8')  
+        return text   
   
 def get_access_level(blob_name):  
     """Returns the access level for a given blob name."""  
     # Define the mapping of blob names to access levels  
     blob_access_levels = {  
-        'New_York_State_Route_373.pdf': [os.getenv("my_entra_id")],  
+        'extracted_text.txt': [os.getenv("my_entra_id")],  
     }  
     return blob_access_levels.get(blob_name, ['all'])  
   
@@ -119,7 +131,7 @@ def vectorize():
     blob_list = container_client.list_blobs()  
     documents = []  
     for blob in blob_list:  
-        if not blob.name.lower().endswith('.pdf'):  
+        if not (blob.name.lower().endswith('.pdf') or blob.name.lower().endswith('.txt')):  
             status_placeholder.write(f"Skipping non-PDF blob: {blob.name}")  
             continue  
         status_placeholder.write(f"Processing blob: {blob.name}")  
@@ -232,7 +244,9 @@ def chat_on_your_data(user_query, user_id):
     completion = client.chat.completions.create(  
         model=azure_gpt_deployment,  
         messages=[  
-            {"role": "system", "content": "You are an AI assistant that helps people find information. Ensure the Markdown responses are correctly formatted before responding."},  
+            {"role": "system", "content": "You are an AI assistant that helps people find information.\
+              Ensure the Markdown responses are correctly formatted before responding. Only answer questions with the context given. \
+             If answer not in context, say 'I do not know.'."},  
             {"role": "user", "content": user_query}  
         ],  
         max_tokens=800,  
@@ -271,13 +285,19 @@ def chat_on_your_data(user_query, user_id):
   
     # Extract the response data  
     response_data = completion.to_dict()  
-    ai_response = response_data['choices'][0]['message']['content']  
-    # Clean up the AI response  
-    ai_response_cleaned = re.sub(r'\s+\.$', '.', re.sub(r'\[doc\d+\]', '', ai_response))  
-    citation = response_data["choices"][0]["message"]["context"]["citations"][0]["url"]  
-    ai_response_final = f"{ai_response_cleaned}\n\nCitation(s):\n{citation}"  
+    # ai_response = response_data['choices'][0]['message']['content']  
+    # # Clean up the AI response  
+    # ai_response_cleaned = re.sub(r'\s+\.$', '.', re.sub(r'\[doc\d+\]', '', ai_response))  
+    # citation = response_data["choices"][0]["message"]["context"]["citations"][0]["url"]  
+    # ai_response_final = f"{ai_response_cleaned}\n\nCitation(s):\n{citation}"  
   
-    return ai_response_final  
+    return response_data 
+
+def clear_session(messages):  
+    # Clear necessary session state variables  
+    st.cache_data.clear()  
+    messages.clear()  
+    return messages  
   
 def main():  
     st.title("Azure OpenAI x AI Search RAG")  
@@ -297,20 +317,36 @@ def main():
         st.header("Chat with AI")  
         if 'messages' not in st.session_state:  
             st.session_state.messages = []  
-  
-        user_input = st.text_input("You: ", "")  
-  
-        if user_input:  
-            st.session_state.messages.append({"role": "user", "content": user_input})  
-            ai_response = chat_on_your_data(user_input, user_id)  
-            st.session_state.messages.append({"role": "assistant", "content": ai_response})  
-  
+
         for message in st.session_state.messages:  
-            if message["role"] == "user":  
-                st.write(f"**YOU**: {message['content']}")  
-            else:  
-                st.write(f"**AI**: {message['content']}")  
-                st.markdown("---")
+            with st.chat_message(message["role"], avatar="✔️"):  
+                st.markdown(message['content'])
   
+        user_input = st.chat_input("Enter query here...")  
+
+        if user_input:
+            with st.spinner('Processing...'):  
+                st.session_state.messages.append({"role": "user", "content": user_input}) 
+                with st.chat_message("user"):  
+                    st.markdown(user_input)  
+                response_data = chat_on_your_data(user_input, user_id)  
+                ai_response = response_data['choices'][0]['message']['content']  
+                # Clean up the AI response  
+                ai_response_cleaned = re.sub(r'\s+\.$', '.', re.sub(r'\[doc\d+\]', '', ai_response))  
+                try:
+                    citation = response_data["choices"][0]["message"]["context"]["citations"][0]["url"]  
+                    ai_response_final = f"{ai_response_cleaned}\n\nCitation(s):\n{citation}"  
+                except IndexError as e:
+                    ai_response_final = f"{ai_response_cleaned}\n\nCitation(s):\nNot found."  
+                st.session_state.messages.append({"role": "assistant", "content": ai_response_final})  
+                with st.chat_message("assistant"):  
+                    st.markdown(ai_response_final)  
+                    st.write('-'*50)
+        clear_chat_placeholder = st.empty()  
+        if clear_chat_placeholder.button('Start New Session'):  
+            st.session_state.messages = clear_session(st.session_state.messages)  
+            clear_chat_placeholder.empty()  
+            st.success("Chat session has been reset.")  
 if __name__ == '__main__':  
+    global_page_style2()
     main()  
