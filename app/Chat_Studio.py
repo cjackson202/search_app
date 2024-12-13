@@ -346,7 +346,7 @@ def main():
         if clear_chat_placeholder.button('Start New Session'):  
             st.session_state.messages = clear_session(st.session_state.messages)  
             clear_chat_placeholder.empty()  
-            st.success("Chat session has been reset.")  
+            st.success("Chat session has been reset. ")  
 if __name__ == '__main__':  
     global_page_style2()
     main()  
