@@ -86,7 +86,7 @@ def load_blob_content(blob_client):
         return text   
   
 def get_access_level(blob_name):  
-    """Returns the access level for a given blob name."""  
+    """Returns the access level for a given blob name. """  
     # Define the mapping of blob names to access levels  
     blob_access_levels = {  
         'extracted_text.txt': [os.getenv("my_entra_id")],  
