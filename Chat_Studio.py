@@ -18,9 +18,12 @@ from azure.search.documents.indexes.models import (
     HnswAlgorithmConfiguration  
 )  
 from dotenv import load_dotenv  
-from openai import AzureOpenAI  
+from openai import AzureOpenAI 
+import requests 
+from datetime import datetime, timezone 
 import tiktoken  
 import re  
+import json
 from styling import global_page_style2
   
 # Load environment variables  
@@ -29,6 +32,13 @@ load_dotenv()
 # Configure Azure AI Search parameters  
 search_endpoint = os.getenv('AZURE_SEARCH_ENDPOINT')  
 search_key = os.getenv('AZURE_SEARCH_ADMIN_KEY')  
+
+# Configure Azure OpenAI parameters  
+azure_endpoint = os.getenv('AZURE_OPENAI_BASE')  
+azure_openai_api_key = os.getenv('AZURE_OPENAI_KEY')  
+azure_openai_api_version = os.getenv('AZURE_OPENAI_VERSION')  
+azure_ada_deployment = os.getenv('AZURE_EMBEDDINGS_DEPLOYMENT')  
+azure_gpt_deployment = os.getenv('AZURE_GPT_DEPLOYMENT')  
 
 def get_user_email():
     # Extract headers using Streamlit's context
@@ -216,19 +226,18 @@ def vectorize():
             "access_level": doc["metadata"]["access_level"]  
         })  
     search_client.upload_documents(documents=documents_to_upload)  
-    status_placeholder.write("Documents uploaded to search index.")  
+    status_placeholder.write("Documents uploaded to search index.") 
+
+def create_prompt():
+    system_prompt = "You are an AI assistant that helps people find information.\
+              Ensure the Markdown responses are correctly formatted before responding. Only answer questions with the context given. \
+             If answer not in context, say 'I do not know.'."
+    return system_prompt
   
 def chat_on_your_data(user_query, user_id):  
     """Perform retrieval queries over documents from the Azure AI Search Index."""  
     search_index = "documents-index"  
     messages = []  
-  
-    # Configure Azure OpenAI parameters  
-    azure_endpoint = os.getenv('AZURE_OPENAI_BASE')  
-    azure_openai_api_key = os.getenv('AZURE_OPENAI_KEY')  
-    azure_openai_api_version = os.getenv('AZURE_OPENAI_VERSION')  
-    azure_ada_deployment = os.getenv('AZURE_EMBEDDINGS_DEPLOYMENT')  
-    azure_gpt_deployment = os.getenv('AZURE_GPT_DEPLOYMENT')  
   
     # Append user query to chat messages  
     messages.append({"role": "user", "content": user_query})  
@@ -244,9 +253,7 @@ def chat_on_your_data(user_query, user_id):
     completion = client.chat.completions.create(  
         model=azure_gpt_deployment,  
         messages=[  
-            {"role": "system", "content": "You are an AI assistant that helps people find information.\
-              Ensure the Markdown responses are correctly formatted before responding. Only answer questions with the context given. \
-             If answer not in context, say 'I do not know.'."},  
+            {"role": "system", "content": create_prompt()},  
             {"role": "user", "content": user_query}  
         ],  
         max_tokens=800,  
@@ -298,6 +305,29 @@ def clear_session(messages):
     st.cache_data.clear()  
     messages.clear()  
     return messages  
+
+def extract_citations_content(data):  
+    contents = []  
+    try:  
+        choices = data.get('choices', [])  
+        for choice in choices:  
+            message = choice.get('message', {})  
+            context = message.get('context', {})  
+            citations_list = context.get('citations', [])  
+            for citation in citations_list:  
+                content = citation.get('content', None)  
+                if content:  
+                    contents.append(content)  
+    except Exception as e:  
+        print(f"An error occurred: {e}")  
+    return contents   
+
+def get_time():  
+    # Capture the current date and time in UTC (MySQL Native timezone)  
+    current_utc_time = datetime.now(timezone.utc)  
+    # Format the date and time to the desired string format  
+    formatted_time = current_utc_time.strftime('%Y-%m-%d %H:%M:%S')  
+    return formatted_time  
   
 def main():  
     st.title("Azure OpenAI x AI Search RAG")  
@@ -323,25 +353,64 @@ def main():
                 st.markdown(message['content'])
   
         user_input = st.chat_input("Enter query here...")  
+        time_asked = get_time()
 
         if user_input:
             with st.spinner('Processing...'):  
                 st.session_state.messages.append({"role": "user", "content": user_input}) 
                 with st.chat_message("user"):  
                     st.markdown(user_input)  
-                response_data = chat_on_your_data(user_input, user_id)  
+                response_data = chat_on_your_data(user_input, user_id) 
+                print(response_data) 
+                # Call the function and print the content of each citation  
+                citations_content = extract_citations_content(response_data) 
+                citations = ""
+                i = 1  
+                for content in citations_content:  
+                    citation = f"Citation {i}: \n{content}\n\n" 
+                    citation = citation.replace("extracted_text.txt", "Cloud Tagging Strategy Guide_v3.1.pdf")
+                    citations += citation
+                    i+=1
+                # print(citations)
                 ai_response = response_data['choices'][0]['message']['content']  
                 # Clean up the AI response  
                 ai_response_cleaned = re.sub(r'\s+\.$', '.', re.sub(r'\[doc\d+\]', '', ai_response))  
                 try:
-                    citation = response_data["choices"][0]["message"]["context"]["citations"][0]["url"]  
-                    ai_response_final = f"{ai_response_cleaned}\n\nCitation(s):\n{citation}"  
+                    citation_link = response_data["choices"][0]["message"]["context"]["citations"][0]["url"]  
+                    citation_link = citation_link.replace("extracted_text.txt", "Cloud Tagging Strategy Guide_v3.1.pdf")
+                    citation_link = citation_link.replace(" ", "%20")  
+                    ai_response_final = f"{ai_response_cleaned}\n\nCitation(s):\n{citation_link}"  
                 except IndexError as e:
                     ai_response_final = f"{ai_response_cleaned}\n\nCitation(s):\nNot found."  
                 st.session_state.messages.append({"role": "assistant", "content": ai_response_final})  
                 with st.chat_message("assistant"):  
                     st.markdown(ai_response_final)  
                     st.write('-'*50)
+            # Call Code API to capture metadata
+            url = "https://code-api.azurewebsites.net/code_api"  
+            
+            # The following data must be sent as payload with each API request.
+            data = {  
+                "system_prompt": f"{create_prompt()}\n\nContext:\n{citations}",  # All system prompts used including retrieved docs and any memory
+                "user_prompt": user_input,  # User prompt in which the end-user asks the model. 
+                "user_prompt_tokens": response_data['usage']['prompt_tokens'],
+                "time_asked": time_asked, # Time in which the user prompt was asked.
+                "response": ai_response_final,  # Model's answer to the user prompt
+                "response_tokens": response_data['usage']['completion_tokens'],
+                "deployment_model": f'{azure_gpt_deployment}, {azure_ada_deployment}', # Input your model deployment names here
+                "name_model": "gpt-4o, text-embedding-ada-002",  # Input your models here
+                "version_model": "2024-05-13, 2",  # Input your model version here. NOT API VERSION.
+                "region": "East US 2",  # Input your AOAI resource region here
+                "project": "NIH - Cloud Tagging Demo",  # Input your project name here. Following the system prompt for this test currently :)
+                "api_name": url, # Input the url of the API used. 
+                "retrieve": True, # Set to True, indicating you are utilizing RAG.
+                "database": "mysqldb" # Set to cosmosdb or mysqldb depending on desired platform
+            }  
+            
+            response = requests.post(url, headers={"Content-Type": "application/json"}, data=json.dumps(data))  
+        
+            print(response.status_code)  
+            print(response.json())  
         clear_chat_placeholder = st.empty()  
         if clear_chat_placeholder.button('Start New Session'):  
             st.session_state.messages = clear_session(st.session_state.messages)  
