@@ -349,7 +349,7 @@ def main():
             st.session_state.messages = []  
 
         for message in st.session_state.messages:  
-            with st.chat_message(message["role"], avatar="✔️"):  
+            with st.chat_message(message["role"]):  
                 st.markdown(message['content'])
   
         user_input = st.chat_input("Enter query here...")  
