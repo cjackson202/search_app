@@ -330,7 +330,7 @@ def get_time():
     return formatted_time  
   
 def main():  
-    st.title("Azure OpenAI x AI Search RAG")  
+    st.title("Azure OpenAI x NIH Cloud Tagging")  
     st.sidebar.title("Navigation")  
     user_email, user_id = get_user_email()
     rag_function = st.sidebar.radio(label="Choose a RAG function below:", options=['Vectorize', 'Chat'])  
@@ -392,6 +392,7 @@ def main():
             # The following data must be sent as payload with each API request.
             data = {  
                 "system_prompt": f"{create_prompt()}\n\nContext:\n{citations}",  # All system prompts used including retrieved docs and any memory
+                "current_user": user_id, # Entra ID object ID for the user who asked prompt
                 "user_prompt": user_input,  # User prompt in which the end-user asks the model. 
                 "user_prompt_tokens": response_data['usage']['prompt_tokens'],
                 "time_asked": time_asked, # Time in which the user prompt was asked.

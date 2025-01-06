@@ -1,45 +1,70 @@
-
-.stApp > header {  
-    background-color: #e9e7e7;
-    color:#f8f8f8;  
-    padding:2rem;  
-}  
-
-.stApp{  
+/* Main app styling */  
+.stApp {  
     background-color: #ffffff;  
-    color:#000000;  
-    padding:2rem;  
+    color: #000000;  
+    padding: 20px;  
+    font-family: Arial, Helvetica, sans-serif;  
 }  
-
+  
+/* Main app styling - chat input class */  
+.stApp .stChatInput {  
+    background-color: #d4d3d3;  
+    border: 1px dashed #0c00e6;  
+    border-radius: 5px;  
+    padding: 0px 0px;  
+    background-color: #f9f9f9;  
+    font-size: 16px;  
+    color: #333;  
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);  
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;  
+    font-family: Arial, Helvetica, sans-serif;  
+}  
+  
+.stApp .stChatInput:hover {  
+    box-shadow: 0 20px 8px rgba(0, 0, 0, 0.15);  
+    border-color: #b60000;  
+    font-family: Arial, Helvetica, sans-serif;  
+}  
+  
+/* Modify the streamlit native three dots in top right corner */  
+.st-emotion-cache-w3nhqi.ef3psqc5 {  
+    color: red !important;  
+    font-family: Arial, Helvetica, sans-serif;  
+}  
+  
 /* Sidebar styling */  
-[data-testid="stSidebar"]{  
-    background-color: #e9e7e7;
+[data-testid="stSidebar"] {  
+    background-color: #f5f5dc;  
     color: #ffffff;  
+    font-family: Arial, Helvetica, sans-serif;  
 }  
-
+  
 [data-testid="stSidebarNav"] {  
     background-image: url(https://logolook.net/wp-content/uploads/2021/06/Microsoft-Logo.png);  
     background-repeat: no-repeat;  
     padding-top: 100px;  
-    background-position: 20px -10px;  
+    background-position: 20px -50px;  
     background-size: 300px;  
+    font-family: Arial, Helvetica, sans-serif;  
 }  
   
 [data-testid="stSidebarNav"]::before {  
     content: "";  
     margin-left: 60px;  
     margin-top: 20px;  
-    font-size: 30px;  
+    font-size: 20px;  
     position: relative;  
-    top: 100px;  
+    top: -300px;  
     font-weight: bold;  
     text-align: center;  
+    font-family: Arial, Helvetica, sans-serif;  
 }  
   
 /* Success message styling */  
 .success-message {  
     text-align: center;  
     margin: 20px 0;  
+    font-family: Arial, Helvetica, sans-serif;  
 }  
   
 /* Main title styling */  
@@ -47,32 +72,24 @@ h1 {
     color: #000400;  
     text-align: center;  
     margin-bottom: 20px;  
-    font-family:cursive;
-    font-size: 70px;
+    font-family: Arial, Helvetica, sans-serif;  
+    font-size: 50px;  
 }  
   
-/* Select box styling */  
-.css-2trqyj {  
-    font-size: 18px;  
+/* Button styling */  
+.stButton button {  
+    background-color: #0073e6;  
+    color: white;  
+    border-radius: 5px;  
+    padding: 10px 20px;  
+    font-size: 16px;  
+    border: none;  
+    cursor: pointer;  
+    font-family: Arial, Helvetica, sans-serif;  
 }  
   
-/* Number input styling */  
-.css-1siy2j7 {  
-    font-size: 18px;  
-}  
-  
-/* Radio button styling */  
-.css-1awt6go {  
-    font-size: 18px;  
-}  
-  
-/* DataFrame styling */  
-.css-1l269bu {  
-    margin-top: 20px;  
-}  
-  
-/* Spinner styling */  
-.css-1f6lu8k {  
-    margin-top: 20px;  
-    text-align: center;  
+.stButton button:hover {  
+    background-color: #005bb5;  
+    color: yellow;  
+    font-family: Arial, Helvetica, sans-serif;  
 }  
