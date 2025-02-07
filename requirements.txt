@@ -7,3 +7,4 @@ azure-storage-blob
 pdfplumber  
 tiktoken  
 azure-ai-formrecognizer  
+semantic-kernel==1.19.0

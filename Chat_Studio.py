@@ -2,6 +2,15 @@ import streamlit as st
 import os  
 import io  
 import pdfplumber  
+import asyncio
+from typing import Annotated
+from semantic_kernel.agents import ChatCompletionAgent
+from semantic_kernel.connectors.ai.function_choice_behavior import FunctionChoiceBehavior
+from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
+from semantic_kernel.contents.chat_history import ChatHistory
+from semantic_kernel.contents.utils.author_role import AuthorRole
+from semantic_kernel.functions.kernel_function_decorator import kernel_function
+from semantic_kernel.kernel import Kernel
 from azure.storage.blob import BlobServiceClient  
 from azure.core.credentials import AzureKeyCredential  
 from azure.identity import DefaultAzureCredential  
@@ -17,13 +26,11 @@ from azure.search.documents.indexes.models import (
     VectorSearchProfile,  
     HnswAlgorithmConfiguration  
 )  
+from azure.search.documents.models import VectorizedQuery
 from dotenv import load_dotenv  
 from openai import AzureOpenAI 
-import requests 
 from datetime import datetime, timezone 
 import tiktoken  
-import re  
-import json
 from styling import global_page_style2
   
 # Load environment variables  
@@ -32,21 +39,63 @@ load_dotenv()
 # Configure Azure AI Search parameters  
 search_endpoint = os.getenv('AZURE_SEARCH_ENDPOINT')  
 search_key = os.getenv('AZURE_SEARCH_ADMIN_KEY')  
+search_index = os.getenv('AZURE_SEARCH_INDEX')
 
 # Configure Azure OpenAI parameters  
-azure_endpoint = os.getenv('AZURE_OPENAI_BASE')  
-azure_openai_api_key = os.getenv('AZURE_OPENAI_KEY')  
+azure_completions_endpoint = os.getenv('APIM_COMPLETIONS_URL')  
+azure_embeddings_endpoint = os.getenv('APIM_EMBEDDINGS_URL')
+azure_openai_api_key = os.getenv('APIM_API_KEY')  
 azure_openai_api_version = os.getenv('AZURE_OPENAI_VERSION')  
 azure_ada_deployment = os.getenv('AZURE_EMBEDDINGS_DEPLOYMENT')  
-azure_gpt_deployment = os.getenv('AZURE_GPT_DEPLOYMENT')  
+azure_gpt_deployment = os.getenv('AZURE_GPT_DEPLOYMENT') 
+azure_completions_endpoint = azure_completions_endpoint.replace("{model}", azure_gpt_deployment).replace("{version}", azure_openai_api_version) 
+azure_embeddings_endpoint = azure_embeddings_endpoint.replace("{model}", azure_ada_deployment).replace("{version}", azure_openai_api_version) 
+
+def get_time():
+    # Capture the current date and time in UTC (MySQL Native timezone)
+    current_utc_time = datetime.now(timezone.utc)  
+    # Format the date and time to the desired string format  
+    formatted_time = current_utc_time.strftime('%Y-%m-%d %H:%M:%S') 
+    return formatted_time 
 
 def get_user_email():
     # Extract headers using Streamlit's context
     headers = st.context.headers
     # The header names may vary; check the specific headers set by Azure App Service
-    user_email = headers.get('X-MS-CLIENT-PRINCIPAL-NAME')
     user_id = headers.get('X-MS-CLIENT-PRINCIPAL-ID')
-    return user_email, user_id
+    return user_id
+
+user_id = get_user_email()
+
+headers = {
+    'Content-Type':'application/json',
+    "system_prompt": '',  # Leave empty string.
+    "current_user": user_id,
+    "user_prompt": '',  # Leave empty string.
+    "time_asked": get_time(), # Time in which the user prompt was asked.
+    "deployment_model": azure_gpt_deployment, # Input your model's deployment name here
+    "name_model": "gpt-4o",  # Input you model here
+    "version_model": "2024-05-13",  # Input your model version here. NOT API VERSION.
+    "region": "East US 2",  # Input your AOAI resource region here
+    "project": "NIH - Cloud Tag v2",  # Input your project name here. Following the system prompt for this test currently :)
+    "database": "mysqldb", # Specify here cosmosdb or mysql as database. 
+    "retrieve": "False" # Must specify True or False here as string 
+}
+
+headers2 = {
+    'Content-Type':'application/json',
+    "system_prompt": '**No system prompt for NIH-Cloud Tag v2 Embeddings**)',  # Leave empty string.
+    "current_user": user_id, # Entra ID object id for a user in the Entra tenant
+    "user_prompt": '',  # Leave empty string.
+    "time_asked": get_time(), # Time in which the user prompt was asked.
+    "deployment_model": azure_ada_deployment, # Input your model's deployment name here
+    "name_model": "text-embedding-ada-002",  # Input you model here
+    "version_model": "2",  # Input your model version here. NOT API VERSION.
+    "region": "East US 2",  # Input your AOAI resource region here
+    "project": "NIH - Cloud Tag v2",  # Input your project name here. Following the system prompt for this test currently :)
+    "database": "mysqldb", # Specify here cosmosdb or mysql as database. 
+    "retrieve": "False" # Must specify True or False here as string 
+}
   
 def setup_azure_openai():  
     """Sets up Azure OpenAI."""  
@@ -233,72 +282,70 @@ def create_prompt():
               Ensure the Markdown responses are correctly formatted before responding. Only answer questions with the context given. \
              If answer not in context, say 'I do not know.'."
     return system_prompt
+
+# Define RAG Plug in for Kernel
+class RAGPlugin:
+    """A RAG Plugin for querying over documents from the Azure AI Search Index."""
+    @kernel_function(description="Provides a guide about Cloud Tagging Strategy.")
+    def retrieve(self, query: Annotated[str, "The question of the user."]) -> Annotated[str, "Returns relevant documents about Cloud Tagging Strategy."]:
+        print("RAG tool being used.")
+        # Initialize the AzureOpenAI client
+        client = AzureOpenAI(
+            azure_endpoint=azure_embeddings_endpoint,
+            api_key=azure_openai_api_key,
+            api_version=azure_openai_api_version, default_headers=headers2
+        )
+        # Get the vector representation of the user query using the Ada model
+        embedding_response = client.embeddings.create(
+            input=query,
+            model=azure_ada_deployment
+        )
+        query_vector = embedding_response.data[0].embedding
+        # Create a SearchClient  
+        search_client = SearchClient(endpoint=search_endpoint,  
+                                    index_name=search_index,  
+                                    credential=AzureKeyCredential(search_key))  
+        vector_query = VectorizedQuery(vector=query_vector, k_nearest_neighbors=5, fields='embedding', exhaustive=True)
+        # Query the index  
+        results = search_client.search(
+            search_text=query,
+            vector_queries= [vector_query],
+            filter=f"access_level/any(level: level eq '{user_id}') or access_level/any(level: level eq 'all')",
+            top=5,
+            select=["content"],
+            )  
+        # Print the results 
+        i = 0 
+        final_output = ""
+        for result in results: 
+            i += 1 
+            content = result.get('content','')
+            final_output += f'Source {i}\n{content}\n{"-"*50}\n\n'
+        return final_output
   
-def chat_on_your_data(user_query, user_id):  
-    """Perform retrieval queries over documents from the Azure AI Search Index."""  
-    search_index = "documents-index"  
-    messages = []  
-  
-    # Append user query to chat messages  
-    messages.append({"role": "user", "content": user_query})  
-  
-    # Initialize the AzureOpenAI client  
-    client = AzureOpenAI(  
-        azure_endpoint=azure_endpoint,  
-        api_key=azure_openai_api_key,  
-        api_version=azure_openai_api_version,  
-    )  
-  
-    # Create a chat completion with Azure OpenAI  
-    completion = client.chat.completions.create(  
-        model=azure_gpt_deployment,  
-        messages=[  
-            {"role": "system", "content": create_prompt()},  
-            {"role": "user", "content": user_query}  
-        ],  
-        max_tokens=800,  
-        temperature=0.7,  
-        top_p=0.95,  
-        frequency_penalty=0,  
-        presence_penalty=0,  
-        stop=None,  
-        stream=False,  
-        extra_body={  
-            "data_sources": [{  
-                "type": "azure_search",  
-                "parameters": {  
-                    "endpoint": search_endpoint,  
-                    "index_name": search_index,  
-                    "semantic_configuration": "default",  
-                    "query_type": "vector_simple_hybrid",  
-                    "fields_mapping": {},  
-                    "in_scope": True,  
-                    "role_information": "You are an AI assistant that helps people find information.",  
-                    "filter": f"access_level/any(level: level eq '{user_id}') or access_level/any(level: level eq 'all')",  
-                    "strictness": 3,  
-                    "top_n_documents": 5,  
-                    "authentication": {  
-                        "type": "api_key",  
-                        "key": search_key  
-                    },  
-                    "embedding_dependency": {  
-                        "type": "deployment_name",  
-                        "deployment_name": azure_ada_deployment  
-                    }  
-                }  
-            }]  
-        }  
-    )  
-  
-    # Extract the response data  
-    response_data = completion.to_dict()  
-    # ai_response = response_data['choices'][0]['message']['content']  
-    # # Clean up the AI response  
-    # ai_response_cleaned = re.sub(r'\s+\.$', '.', re.sub(r'\[doc\d+\]', '', ai_response))  
-    # citation = response_data["choices"][0]["message"]["context"]["citations"][0]["url"]  
-    # ai_response_final = f"{ai_response_cleaned}\n\nCitation(s):\n{citation}"  
-  
-    return response_data 
+async def invoke_agent(agent: ChatCompletionAgent, input: str, chat: ChatHistory) -> None:
+    """Invoke the agent with the user input."""
+    chat.add_user_message(input)
+    # print(f"# {AuthorRole.USER}: '{input}'")
+    streaming = False
+    if streaming:
+        contents = []
+        content_name = ""
+        async for content in agent.invoke_stream(chat):
+            content_name = content.name
+            contents.append(content)
+        message_content = "".join([content.content for content in contents])
+        # print(f"# {content.role} - {content_name or '*'}: '{message_content}'")
+        chat.add_assistant_message(message_content)
+        return message_content
+    else:
+        contents = []
+        async for content in agent.invoke(chat):
+            contents.append(content)
+        message_content = "".join([content.content for content in contents])
+            # print(f"\n# {content.role} - {content.name or '*'}: {content.content}\n\n")
+        chat.add_message(content)
+        return message_content
 
 def clear_session(messages):  
     # Clear necessary session state variables  
@@ -329,10 +376,10 @@ def get_time():
     formatted_time = current_utc_time.strftime('%Y-%m-%d %H:%M:%S')  
     return formatted_time  
   
-def main():  
+async def main():  
     st.title("Azure OpenAI x NIH Cloud Tagging")  
     st.sidebar.title("Navigation")  
-    user_email, user_id = get_user_email()
+    # user_email, user_id = get_user_email()
     rag_function = st.sidebar.radio(label="Choose a RAG function below:", options=['Vectorize', 'Chat'])  
   
     if rag_function == "Vectorize":  
@@ -344,7 +391,40 @@ def main():
             st.success("Vectorization complete!")  
   
     if rag_function == "Chat":  
-        st.header("Chat with AI")  
+        st.header("Chat with AI") 
+        # Define the agent name and instructions
+        AGENT_NAME = "Cloud_Tag_Specialist"
+        AGENT_INSTRUCTIONS = """
+        You are a Cloud Tagging Strategy assistant. 
+        You are here to help navigate users through cloud tagging concepts and answer any questions they might have using the cloud tagging guide. 
+        Users can ask about:
+        - Tagging strategies for different cloud environments (e.g., AWS, Azure, Google Cloud)
+        - Best practices for implementing tagging in your organization
+        - Use cases and examples of effective tagging
+        - Benefits of a well-structured tagging strategy
+        - Common challenges and how to overcome them
+        You must retrieve all information from the given plug-in. Cite all answers with the file name.
+        If question can't be answered with plug-in, simple say I do not know.
+        You will interact with users ranging from beginner to expert levels. 
+        Guide users and suggest questions that can be asked if needed.
+        """ 
+        # Create the instance of the Kernel
+        kernel = Kernel()
+        service_id = "agent"
+        kernel.add_service(AzureChatCompletion(service_id=service_id, api_key=azure_openai_api_key, endpoint=azure_completions_endpoint, api_version=azure_openai_api_version,
+                                            deployment_name=azure_gpt_deployment, default_headers=headers))
+        settings = kernel.get_prompt_execution_settings_from_service_id(service_id=service_id)
+        # Configure the function choice behavior to auto invoke kernel functions
+        settings.function_choice_behavior = FunctionChoiceBehavior.Auto()
+        kernel.add_plugin(RAGPlugin(), plugin_name="cloud_tag_guide")
+        # Create the agent
+        agent = ChatCompletionAgent(
+            service_id="agent", kernel=kernel, name=AGENT_NAME, instructions=AGENT_INSTRUCTIONS, execution_settings=settings
+        )
+        # Define the chat history
+        if 'chat_history' not in st.session_state:
+            st.session_state.chat_history = ChatHistory()
+
         if 'messages' not in st.session_state:  
             st.session_state.messages = []  
 
@@ -353,65 +433,19 @@ def main():
                 st.markdown(message['content'])
   
         user_input = st.chat_input("Enter query here...")  
-        time_asked = get_time()
 
         if user_input:
             with st.spinner('Processing...'):  
                 st.session_state.messages.append({"role": "user", "content": user_input}) 
                 with st.chat_message("user"):  
                     st.markdown(user_input)  
-                response_data = chat_on_your_data(user_input, user_id) 
-                print(response_data) 
-                # Call the function and print the content of each citation  
-                citations_content = extract_citations_content(response_data) 
-                citations = ""
-                i = 1  
-                for content in citations_content:  
-                    citation = f"Citation {i}: \n{content}\n\n" 
-                    citation = citation.replace("extracted_text.txt", "Cloud Tagging Strategy Guide_v3.1.pdf")
-                    citations += citation
-                    i+=1
-                # print(citations)
-                ai_response = response_data['choices'][0]['message']['content']  
-                # Clean up the AI response  
-                ai_response_cleaned = re.sub(r'\s+\.$', '.', re.sub(r'\[doc\d+\]', '', ai_response))  
-                try:
-                    citation_link = response_data["choices"][0]["message"]["context"]["citations"][0]["url"]  
-                    citation_link = citation_link.replace("extracted_text.txt", "Cloud Tagging Strategy Guide_v3.1.pdf")
-                    citation_link = citation_link.replace(" ", "%20")  
-                    ai_response_final = f"{ai_response_cleaned}\n\nCitation(s):\n{citation_link}"  
-                except IndexError as e:
-                    ai_response_final = f"{ai_response_cleaned}\n\nCitation(s):\nNot found."  
-                st.session_state.messages.append({"role": "assistant", "content": ai_response_final})  
+                response = await invoke_agent(agent, user_input, st.session_state.chat_history)
+ 
+                st.session_state.messages.append({"role": "assistant", "content": response})  
                 with st.chat_message("assistant"):  
-                    st.markdown(ai_response_final)  
+                    st.markdown(response)  
                     st.write('-'*50)
-            # Call Code API to capture metadata
-            url = "https://code-api.azurewebsites.net/code_api"  
-            
-            # The following data must be sent as payload with each API request.
-            data = {  
-                "system_prompt": f"{create_prompt()}\n\nContext:\n{citations}",  # All system prompts used including retrieved docs and any memory
-                "current_user": user_id, # Entra ID object ID for the user who asked prompt
-                "user_prompt": user_input,  # User prompt in which the end-user asks the model. 
-                "user_prompt_tokens": response_data['usage']['prompt_tokens'],
-                "time_asked": time_asked, # Time in which the user prompt was asked.
-                "response": ai_response_final,  # Model's answer to the user prompt
-                "response_tokens": response_data['usage']['completion_tokens'],
-                "deployment_model": f'{azure_gpt_deployment}, {azure_ada_deployment}', # Input your model deployment names here
-                "name_model": "gpt-4o, text-embedding-ada-002",  # Input your models here
-                "version_model": "2024-05-13, 2",  # Input your model version here. NOT API VERSION.
-                "region": "East US 2",  # Input your AOAI resource region here
-                "project": "NIH - Cloud Tagging Demo",  # Input your project name here. Following the system prompt for this test currently :)
-                "api_name": url, # Input the url of the API used. 
-                "retrieve": True, # Set to True, indicating you are utilizing RAG.
-                "database": "mysqldb" # Set to cosmosdb or mysqldb depending on desired platform
-            }  
-            
-            response = requests.post(url, headers={"Content-Type": "application/json"}, data=json.dumps(data))  
-        
-            print(response.status_code)  
-            print(response.json())  
+
         clear_chat_placeholder = st.empty()  
         if clear_chat_placeholder.button('Start New Session'):  
             st.session_state.messages = clear_session(st.session_state.messages)  
@@ -419,4 +453,4 @@ def main():
             st.success("Chat session has been reset. ")  
 if __name__ == '__main__':  
     global_page_style2()
-    main()  
+    asyncio.run(main())
