@@ -1,6 +1,7 @@
 import os  
 import logging  
-import re  
+import re
+import tempfile  
 import streamlit as st  
 from azure.storage.blob import BlobServiceClient  
 from azure.ai.formrecognizer import DocumentAnalysisClient  
@@ -59,25 +60,46 @@ def format_table(table):
 def main():  
     st.title("Azure Blob Storage Document Analysis")  
   
-    container_name = st.text_input("Blob Container Name", os.getenv("BLOB_CONTAINER_NAME"))  
-    blob_name = st.text_input("Blob Name", "Cloud Tagging Strategy Guide_v3.1.pdf")  
-    connection_string = st.text_input("Blob Connection String", os.getenv("BLOB_CONNECTION_STRING"), type="password")  
-    endpoint = st.text_input("Azure Document Intelligence Endpoint", os.getenv("AZURE_DOC_INTEL_URL"))  
-    key = st.text_input("Azure Document Intelligence Key", os.getenv("AZURE_DOC_INTEL_KEY"), type="password")  
+    # Use environment variables directly - do not expose in UI
+    container_name = os.getenv("BLOB_CONTAINER_NAME")
+    blob_name_input = st.text_input("Blob Name", "Cloud Tagging Strategy Guide_v3.1.pdf")
+    
+    # Sanitize blob name to prevent path traversal attacks
+    blob_name = os.path.basename(blob_name_input)
+    if blob_name != blob_name_input:
+        st.warning("Blob name has been sanitized to prevent path traversal")
+    
+    connection_string = os.getenv("BLOB_CONNECTION_STRING")
+    endpoint = os.getenv("AZURE_DOC_INTEL_URL")
+    key = os.getenv("AZURE_DOC_INTEL_KEY")  
   
     if st.button("Analyze Document"):  
         if not all([container_name, blob_name, connection_string, endpoint, key]):  
             st.error("Please provide all the required inputs")  
             return  
+        
+        # Validate blob name extension
+        if not (blob_name.lower().endswith('.pdf') or blob_name.lower().endswith('.txt')):
+            st.error("Only PDF and TXT files are supported")
+            return
           
-        download_path = "temp_downloaded_file.pdf"  
-        output_text_file = "extracted_text.txt"  
+        # Use secure temporary file handling
+        download_fd, download_path = tempfile.mkstemp(suffix='.pdf')
+        output_fd, output_text_file = tempfile.mkstemp(suffix='.txt')
         extracted_blob_name = "extracted_text.txt"  
   
-        try:  
+        try:
+            # Close file descriptors as we'll use the paths
+            os.close(download_fd)
+            os.close(output_fd)
             # Download the PDF from blob storage  
             download_blob_as_bytes(container_name, blob_name, connection_string, download_path)  
   
+            # Validate file was downloaded successfully
+            if not os.path.exists(download_path):
+                st.error("Failed to download the file")
+                return
+                
             # Read the file content  
             with open(download_path, "rb") as pdf_file:  
                 pdf_data = pdf_file.read()  
@@ -143,12 +165,16 @@ def main():
             st.error(f"An error occurred: {e}")  
   
         finally:  
-            # Clean up: Delete the temporary file  
-            if os.path.exists(download_path):  
-                os.remove(download_path)  
-                logging.info(f"Deleted temporary file {download_path}")  
-            else:  
-                logging.warning(f"The file {download_path} does not exist")  
+            # Clean up: Delete the temporary files securely
+            for temp_file in [download_path, output_text_file]:
+                if os.path.exists(temp_file):  
+                    try:
+                        os.remove(temp_file)  
+                        logging.info(f"Deleted temporary file {temp_file}")
+                    except OSError as e:
+                        logging.error(f"Failed to delete temporary file {temp_file}: {e}")
+                else:  
+                    logging.warning(f"The file {temp_file} does not exist")  
   
 if __name__ == "__main__":  
     global_page_style2()
