@@ -48,6 +48,13 @@ azure_openai_api_key = os.getenv('APIM_API_KEY')
 azure_openai_api_version = os.getenv('AZURE_OPENAI_VERSION')  
 azure_ada_deployment = os.getenv('AZURE_EMBEDDINGS_DEPLOYMENT')  
 azure_gpt_deployment = os.getenv('AZURE_GPT_DEPLOYMENT') 
+
+# Validate required environment variables to prevent NoneType errors
+if not all([azure_completions_endpoint, azure_embeddings_endpoint, azure_openai_api_key, 
+            azure_openai_api_version, azure_ada_deployment, azure_gpt_deployment]):
+    st.error("Missing required environment variables. Please check your configuration.")
+    st.stop()
+
 azure_completions_endpoint = azure_completions_endpoint.replace("{model}", azure_gpt_deployment).replace("{version}", azure_openai_api_version) 
 azure_embeddings_endpoint = azure_embeddings_endpoint.replace("{model}", azure_ada_deployment).replace("{version}", azure_openai_api_version) 
 
